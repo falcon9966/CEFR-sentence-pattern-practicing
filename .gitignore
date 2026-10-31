@@ -1,0 +1,6 @@
+# 個人/專案記憶，勿上傳
+.workbuddy/
+
+# 作業系統/編輯器暫存
+.DS_Store
+Thumbs.db
