@@ -32,6 +32,7 @@
   .lv .meta{display:flex;align-items:center;justify-content:space-between;padding:10px 12px}
   .lv .lvname{font-weight:700;font-size:15px}
   .lv .lvtag{font-size:12px;color:var(--muted)}
+  .lv .cont{position:absolute;top:8px;right:8px;background:var(--accent);color:#fff;font-size:11px;padding:3px 9px;border-radius:999px;font-weight:600}
 
   .player-view{display:none}
   .back{display:inline-flex;align-items:center;gap:7px;cursor:pointer;color:var(--accent);
@@ -70,6 +71,8 @@
   .item:hover{background:var(--card2);color:var(--txt)}
   .item.active{background:linear-gradient(90deg,rgba(91,140,255,.18),rgba(124,91,255,.10));color:#fff;border-color:rgba(91,140,255,.5)}
   .item .n{color:var(--accent);font-weight:700;margin-right:8px}
+  .item.done::after{content:"✓";color:#5bd68a;font-weight:700;margin-left:8px}
+  .item .resume{float:right;color:var(--accent);font-size:11px;opacity:.85}
   .empty{color:var(--muted);font-size:13px;padding:20px;text-align:center}
   .foot{margin-top:40px;color:var(--muted);font-size:12px;text-align:center}
   .tip{margin-top:10px;color:var(--muted);font-size:12px;line-height:1.6}
@@ -154,31 +157,54 @@ const toastEl=document.getElementById('toast');
 
 let current=null, currentId=null;
 let apiReady=false, playerObj=null, pendingVid=null, readyFired=false, errTimer=null;
+let pendingSeek=null, saveTimer=null;
+
+/* ---------- 播放進度記憶 (localStorage) ---------- */
+const K_PROG='yt_progress_v1', K_LAST='yt_last_v1', K_DONE='yt_done_v1';
+function loadMap(k){ try{return JSON.parse(localStorage.getItem(k))||{};}catch(_){return {};} }
+function saveMap(k,m){ try{localStorage.setItem(k,JSON.stringify(m));}catch(_){} }
+function getProgress(id){ return Number(loadMap(K_PROG)[id]||0)||0; }
+function saveProgress(id,sec){ if(!id) return; const m=loadMap(K_PROG); m[id]=Math.max(0,Math.floor(sec)); saveMap(K_PROG,m); }
+function markDone(id){ const m=loadMap(K_DONE); m[id]=1; saveMap(K_DONE,m); }
+function isDone(id){ return !!loadMap(K_DONE)[id]; }
+function saveLast(level,idx){ saveMap(K_LAST,{level:level,idx:idx}); }
+function loadLast(){ try{return JSON.parse(localStorage.getItem(K_LAST));}catch(_){return null;} }
+function fmt(s){ s=Math.max(0,Math.floor(s)); const m=Math.floor(s/60),x=s%60; return m+':'+(x<10?'0':'')+x; }
 
 function toast(msg){ toastEl.textContent=msg; toastEl.classList.add('show'); clearTimeout(toastEl._t); toastEl._t=setTimeout(()=>toastEl.classList.remove('show'),1800); }
 
 document.getElementById('totalPill').textContent='共 '+LEVELS.reduce((s,l)=>s+l.videos.length,0)+' 支影片';
 
-LEVELS.forEach((lv,i)=>{
-  const el=document.createElement('div');
-  el.className='lv';
-  el.innerHTML=`<img src="${lv.img}" alt="${lv.level}"><div class="meta"><span class="lvname">${lv.level}</span><span class="lvtag">${lv.label} · ${lv.videos.length} 支</span></div>`;
-  el.onclick=()=>openLevel(i);
-  grid.appendChild(el);
-});
+function renderGrid(){
+  grid.innerHTML='';
+  const last=loadLast();
+  LEVELS.forEach((lv,i)=>{
+    const el=document.createElement('div');
+    el.className='lv';
+    const cont=(last && last.level===lv.level) ? '<div class="cont">↺ 繼續</div>' : '';
+    el.innerHTML=cont+`<img src="${lv.img}" alt="${lv.level}"><div class="meta"><span class="lvname">${lv.level}</span><span class="lvtag">${lv.label} · ${lv.videos.length} 支</span></div>`;
+    el.onclick=()=>{
+      const li=loadLast();
+      if(li && li.level===lv.level && li.idx>=0 && li.idx<lv.videos.length) openLevel(i,li.idx);
+      else openLevel(i);
+    };
+    grid.appendChild(el);
+  });
+}
+renderGrid();
 
 function onYouTubeIframeAPIReady(){
   apiReady=true;
   if(pendingVid){ const v=pendingVid; pendingVid=null; mountPlayer(v); }
 }
 
-function openLevel(i){
+function openLevel(i,startIdx){
   const lv=LEVELS[i];
   current={level:lv.level,label:lv.label,videos:lv.videos,activeIndex:-1};
   home.style.display='none'; player.style.display='block';
   backBtn.textContent='← 返回程度選單（'+lv.level+' '+lv.label+'）';
   search.value=''; renderPlaylist();
-  if(lv.videos.length) play(0);
+  if(lv.videos.length) play(startIdx!=null?startIdx:0);
   player.scrollIntoView({behavior:'smooth',block:'start'});
 }
 
@@ -190,9 +216,11 @@ function renderPlaylist(){
     if(q && !(`${v.t} ${v.id}`.toLowerCase().includes(q))) return;
     shown++;
     const d=document.createElement('div');
-    d.className='item'+(idx===current.activeIndex?' active':'');
+    d.className='item'+(idx===current.activeIndex?' active':'')+(isDone(v.id)?' done':'');
     const num=(v.t.split('｜')[1]||'').trim();
-    d.innerHTML=`<span class="n">${num||('#'+(idx+1))}</span>${v.t}`;
+    const sec=getProgress(v.id);
+    const resume = (!isDone(v.id) && sec>3) ? `<span class="resume">▸續播 ${fmt(sec)}</span>` : '';
+    d.innerHTML=`<span class="n">${num||('#'+(idx+1))}</span>${v.t}${resume}`;
     d.onclick=()=>play(idx);
     playlist.appendChild(d);
   });
@@ -207,6 +235,8 @@ function play(idx){
   ytOpen.href='https://www.youtube.com/watch?v='+v.id;
   renderPlaylist();
   hideFallback();
+  saveLast(current.level,idx);
+  pendingSeek=getProgress(v.id);          // 有進度就續播
   if(apiReady){
     if(playerObj){ playerObj.loadVideoById(v.id); startErrWatch(v.id); }
     else mountPlayer(v.id);
@@ -222,11 +252,32 @@ function mountPlayer(vid){
     videoId:vid,
     playerVars:{rel:0,playsinline:1},
     events:{
-      onReady:()=>{ readyFired=true; clearTimeout(errTimer); hideFallback(); playerObj.playVideo(); },
-      onError:(e)=>{ showFallback(vid, e.data); }
+      onReady:()=>{ readyFired=true; clearTimeout(errTimer); hideFallback(); playerObj.playVideo(); startSaveTimer(); },
+      onError:(e)=>{ showFallback(vid, e.data); },
+      onStateChange:(e)=>{
+        if(e.data===1){                                  // 播放中
+          if(pendingSeek!=null){
+            const s=pendingSeek; pendingSeek=null;
+            const dur=(typeof playerObj.getDuration==='function')?playerObj.getDuration():0;
+            if(s>3 && (!dur || s<dur-2)){ playerObj.seekTo(s,true); toast('已從 '+fmt(s)+' 續播'); }
+          }
+          startSaveTimer();
+        }
+        if(e.data===0){ saveProgress(currentId,0); markDone(currentId); if(current) renderPlaylist(); }  // 播完
+        if(e.data===2 && currentId){ saveProgress(currentId, playerObj.getCurrentTime()); } // 暫停
+      }
     }
   });
   startErrWatch(vid);
+}
+
+function startSaveTimer(){
+  if(saveTimer) return;
+  saveTimer=setInterval(()=>{
+    if(playerObj && typeof playerObj.getPlayerState==='function' && playerObj.getPlayerState()===1 && currentId){
+      saveProgress(currentId, playerObj.getCurrentTime());
+    }
+  },4000);
 }
 
 function startErrWatch(vid){
@@ -257,7 +308,10 @@ function step(d){
 }
 function replay(){
   if(!playerObj || !currentId) return;
+  pendingSeek=null;
   playerObj.seekTo(0,true); playerObj.playVideo();
+  saveProgress(currentId,0);
+  renderPlaylist();
   toast('重新播放');
 }
 
@@ -266,11 +320,17 @@ prevBtn.onclick=()=>step(-1);
 nextBtn.onclick=()=>step(1);
 replayBtn.onclick=replay;
 backBtn.onclick=()=>{
+  if(playerObj && currentId && typeof playerObj.getCurrentTime==='function') saveProgress(currentId, playerObj.getCurrentTime());
   if(playerObj) playerObj.stopVideo();
   player.style.display='none'; home.style.display='block';
   ytFallback.style.display='none'; banner.style.display='none';
-  current=null; currentId=null; window.scrollTo({top:0,behavior:'smooth'});
+  current=null; currentId=null; pendingSeek=null;
+  renderGrid();
+  window.scrollTo({top:0,behavior:'smooth'});
 };
+window.addEventListener('pagehide',()=>{
+  if(playerObj && currentId && typeof playerObj.getCurrentTime==='function') saveProgress(currentId, playerObj.getCurrentTime());
+});
 </script>
 <script src="https://www.youtube.com/iframe_api"></script>
 </body>

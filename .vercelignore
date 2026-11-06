@@ -2,3 +2,7 @@
 .git
 .gitignore
 .vercelignore
+Videos/
+.transcribe_tmp/
+*.py
+字幕/
